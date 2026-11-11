@@ -1,0 +1,668 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sun and Moon</title>
+<style>
+  :root {
+    --bg: #05070d;
+    --fg: #cfd8ee;
+    --muted: #6f7a96;
+    --line: #151b2c;
+    --accent: #f0a35a;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 16px;
+  }
+  .col { width: min(100%, 1240px); display: flex; flex-direction: column; gap: 12px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
+  h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .02em; }
+  header p { margin: 0; color: var(--muted); min-width: 0; }
+  
+  .stage {
+    position: relative;
+    background: #000;
+    border: 1px solid var(--line);
+    line-height: 0;
+    cursor: pointer;
+  }
+  .stage:fullscreen {
+    width: 100vw; height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    border: none; background: #000;
+  }
+  .stage:-webkit-full-screen {
+    width: 100vw; height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    border: none; background: #000;
+  }
+  
+  #overlay {
+    position: absolute;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(5, 7, 13, 0.92);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 10;
+    transition: opacity 0.5s ease;
+  }
+  #overlay.hidden {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .overlay-text {
+    color: var(--fg);
+    font: 14px ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    border: 1px solid var(--line);
+    padding: 12px 24px;
+    background: rgba(0, 0, 0, 0.8);
+    border-radius: 4px;
+  }
+
+  canvas { display: block; width: 100%; height: auto; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; color: var(--muted); }
+  .bar .grow { flex: 1 1 auto; }
+  .phase { color: var(--fg); }
+  .time { font-variant-numeric: tabular-nums; }
+  button {
+    font: inherit; color: var(--fg); background: transparent;
+    border: 1px solid var(--line); padding: 4px 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button:focus-visible, .stage:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<div class="col">
+  <header>
+    <h1>Sun and Moon</h1>
+    <p>ASCII sun and moon IB: @buildmeri on instagram.</p>
+  </header>
+  <div class="stage" id="stage" tabindex="0" aria-label="Animated ASCII sun and moon. Click or press space to pause.">
+    <div id="overlay">
+      <div class="overlay-text">Click anywhere to start</div>
+    </div>
+    <canvas id="cv"></canvas>
+  </div>
+  <div class="bar">
+    <button id="playBtn" type="button">Play</button>
+    <button id="restartBtn" type="button">Restart</button>
+    <span class="phase" id="phase">Apart</span>
+    <span class="grow"></span>
+    <span class="time" id="time">00:00 / 00:30</span>
+  </div>
+</div>
+
+<script>
+(function () {
+"use strict";
+
+const COLS = 130, ROWS = 38;
+const CWv = 8, CHv = 17, ASPECT = CHv / CWv;      
+const CYCLE = 30.0;
+const ORBIT_R = 0.235, SUN_RAD = 0.33, MOON_RAD = 0.22, EARTH_RAD = 0.31;
+const STAR_FADE_IN = 2.5, N_STARS = 300, N_METEORS = 3;
+const VIBRANCE = 1.30, PLANET_FADE_IN = 4.0, GLOW_GAIN = 1.7;
+const FPS = 30;
+const FONT = 'ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace';
+const RAMP = " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*MW&8%B@$";
+const N = COLS * ROWS;
+
+function clamp(x, a, b) { return x < a ? a : (x > b ? b : x); }
+function ss(e0, e1, x) { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); }
+function sstep(x) { x = clamp(x, 0, 1); return x * x * x * (x * (x * 6 - 15) + 10); }
+function mulberry(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function gauss(r) { let u = 0; while (!u) u = r(); const v = r(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
+function unitVec(r) { const x = gauss(r), y = gauss(r), z = gauss(r), n = Math.hypot(x, y, z); return [x / n, y / n, z / n]; }
+function uni(r, a, b) { return a + (b - a) * r(); }
+
+const st = (function () {
+  const r = mulberry(11), W = COLS * CWv, H = ROWS * CHv;
+  const o = { SX: [], SY: [], SD: [], SF: [], SPH: [], sb: [], scol: [] };
+  for (let i = 0; i < N_STARS; i++) o.SX.push(uni(r, -1, 1) * (W / H) * 0.55);
+  for (let i = 0; i < N_STARS; i++) o.SY.push(uni(r, -1, 1) * 0.55);
+  for (let i = 0; i < N_STARS; i++) o.SD.push(uni(r, 0.70, 1.0));
+  for (let i = 0; i < N_STARS; i++) o.SF.push(uni(r, 0.8, 3.2));
+  for (let i = 0; i < N_STARS; i++) o.SPH.push(uni(r, 0, 2 * Math.PI));
+  for (let i = 0; i < N_STARS; i++) o.sb.push(Math.pow(uni(r, 0.2, 0.75), 1.5));
+  for (let i = 0; i < N_STARS; i++) if (r() < 0.05) o.sb[i] = 1.0;
+  for (let i = 0; i < N_STARS; i++) {
+    const k = r();
+    o.scol.push(k < 0.60 ? [205, 222, 255] : (k < 0.85 ? [150, 185, 255] : [255, 232, 190]));
+  }
+  return o;
+})();
+
+const NDIR = [], NPH = [];
+(function () { const r = mulberry(3); for (let i = 0; i < 24; i++) NDIR.push(unitVec(r)); for (let i = 0; i < 24; i++) NPH.push(r() * 2 * Math.PI); })();
+
+function snoise3(nx, ny, nz, freq, off, oct, tph) {
+  let out = 0, amp = 1, tot = 0;
+  for (let o = 0; o < oct; o++) {
+    const f = freq * Math.pow(2, o);
+    for (let j = 0; j < 4; j++) {
+      const i = (o * 4 + j + off) % 24, d = NDIR[i];
+      out += amp * Math.sin((nx * d[0] + ny * d[1] + nz * d[2]) * f * (1 + 0.13 * j) + NPH[i] + tph * (0.5 + 0.25 * j));
+      tot += amp;
+    }
+    amp *= 0.5;
+  }
+  return clamp(0.5 + 0.5 * out / (tot * 0.62), 0, 1);
+}
+function spin(dx, dy, dz, a) { const c = Math.cos(a), s = Math.sin(a); return [dx * c + dz * s, dy, -dx * s + dz * c]; }
+
+const crng = mulberry(21);
+const CR_C = [], CR_R = [], SP_C = [], SP_R = [], RY_C = [], RY_T1 = [], RY_T2 = [];
+for (let i = 0; i < 150; i++) CR_C.push(unitVec(crng));
+for (let i = 0; i < 150; i++) CR_R.push(0.035 + 0.25 * Math.pow(crng(), 3));
+for (let i = 0; i < 16; i++) SP_C.push(unitVec(crng));
+for (let i = 0; i < 16; i++) SP_R.push(uni(crng, 0.07, 0.17));
+for (let i = 0; i < 4; i++) RY_C.push(unitVec(crng));
+function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+function norm(a) { const n = Math.hypot(a[0], a[1], a[2]); return [a[0] / n, a[1] / n, a[2] / n]; }
+for (let i = 0; i < 4; i++) { const t1 = norm(cross(RY_C[i], unitVec(crng))); RY_T1.push(t1); RY_T2.push(cross(RY_C[i], t1)); }
+const RY_K = [9, 11, 13, 10], RY_PH = [0.7, 2.1, 4.0, 5.3];
+
+function craterField(n) {
+  let sum = 0;
+  for (let i = 0; i < 150; i++) {
+    const c = CR_C[i], R = CR_R[i];
+    const dot = n[0] * c[0] + n[1] * c[1] + n[2] * c[2];
+    if (dot < Math.cos(Math.min(1.8 * R, Math.PI))) continue;
+    const u = Math.acos(clamp(dot, -1, 1)) / R;
+    const floor = u < 1 ? 1 - u * u : 0;
+    const rim = Math.exp(-Math.pow((u - 1.0) / 0.16, 2));
+    const peak = (u < 0.18 && R > 0.12) ? 1 - u / 0.18 : 0;
+    sum += 0.9 * rim - floor + 0.8 * peak;
+  }
+  return sum;
+}
+function rayField(n) {
+  let sum = 0;
+  for (let i = 0; i < 4; i++) {
+    const c = RY_C[i];
+    const ang = Math.acos(clamp(n[0] * c[0] + n[1] * c[1] + n[2] * c[2], -1, 1));
+    const t1 = RY_T1[i], t2 = RY_T2[i];
+    const az = Math.atan2(n[0] * t2[0] + n[1] * t2[1] + n[2] * t2[2], n[0] * t1[0] + n[1] * t1[1] + n[2] * t1[2]);
+    const streak = Math.pow(0.5 + 0.5 * Math.cos(az * RY_K[i] + RY_PH[i]), 7);
+    sum += streak * Math.exp(-ang / 0.65) * ss(0.05, 0.16, ang);
+  }
+  return clamp(sum, 0, 1);
+}
+let umbraV = 0, penV = 0;
+function spotFields(n) {
+  let u = 0, p = 0;
+  for (let i = 0; i < 16; i++) {
+    const c = SP_C[i];
+    const ang = Math.acos(clamp(n[0] * c[0] + n[1] * c[1] + n[2] * c[2], -1, 1));
+    u += clamp(1 - ang / (0.5 * SP_R[i]), 0, 1);
+    p += clamp(1 - ang / SP_R[i], 0, 1);
+  }
+  umbraV = Math.min(u, 1); penV = Math.min(p, 1);
+}
+
+let oD = 0, oR = 0, oG = 0, oB = 0;
+function shadeSun(dx, dy, dz, t) {
+  const n = spin(dx, dy, dz, t * 0.04);
+  const gran = snoise3(n[0], n[1], n[2], 12.0, 0, 3, t * 0.25);
+  const cells = 1.0 - Math.abs(2 * gran - 1);
+  const fine = snoise3(n[0], n[1], n[2], 34.0, 8, 1, t * 0.5);
+  const plage = snoise3(n[0], n[1], n[2], 3.0, 15, 2, t * 0.05);
+  spotFields(n);
+  const limb = Math.sqrt(dz);
+  oD = clamp(0.50 + 0.26 * limb + 0.16 * (cells - 0.5) + 0.06 * (fine - 0.5) + 0.10 * (plage - 0.5) - 0.36 * umbraV - 0.14 * penV, 0, 1);
+  const k1 = Math.pow(limb, 1.5), k2 = 0.8 * ss(0.75, 1.0, limb);
+  let r = 214 + (255 - 214) * k1, g = 70 + (205 - 70) * k1, b = 14 + (95 - 14) * k1;
+  r += (255 - r) * k2; g += (244 - g) * k2; b += (208 - b) * k2;
+  const m = (0.72 + 0.28 * cells + 0.10 * (plage - 0.5)) * (1 - 0.75 * umbraV - 0.35 * penV);
+  oR = clamp(r * m, 0, 255); oG = clamp(g * m, 0, 255); oB = clamp(b * m, 0, 255);
+}
+
+function shadeMoon(dx, dy, dz, t, lv) {
+  const n = spin(dx, dy, dz, 0.5 + t * 0.015);
+  const cr = craterField(n);
+  const rays = rayField(n);
+  const maria = ss(0.52, 0.60, snoise3(n[0], n[1], n[2], 1.8, 5, 3, 0));
+  const reg = snoise3(n[0], n[1], n[2], 14.0, 12, 2, 0);
+  const lam = clamp(dx * lv[0] + dy * lv[1] + dz * lv[2], 0, 1);
+  const albedo = clamp(0.80 - 0.42 * maria + 0.26 * cr + 0.34 * rays + 0.16 * (reg - 0.5), 0.15, 1.25);
+  const lk = 0.16 + 0.84 * Math.pow(lam, 0.7);
+  oD = clamp(0.30 + 0.62 * lk * albedo + 0.10 * cr, 0, 1);
+  const a = albedo * lk * 1.6, sh = (1 - lam) * 0.45;
+  oR = clamp(214 * a + 30 * sh, 0, 255); oG = clamp(226 * a + 52 * sh, 0, 255); oB = clamp(255 * a + 120 * sh, 0, 255);
+}
+
+const EL = norm([-0.5, -0.32, 0.8]);
+function shadeEarth(dx, dy, dz, t) {
+  const n = spin(dx, dy, dz, t * 0.12);
+  const w0 = snoise3(n[0], n[1], n[2], 1.6, 3, 2, 0) - 0.5;
+  const w1 = snoise3(n[0], n[1], n[2], 1.6, 7, 2, 0) - 0.5;
+  const w2 = snoise3(n[0], n[1], n[2], 1.6, 11, 2, 0) - 0.5;
+  const f = snoise3(n[0] + 0.9 * w0, n[1] + 0.9 * w1, n[2] + 0.9 * w2, 2.4, 2, 4, 0);
+  const land = ss(0.51, 0.55, f);
+  const shallow = ss(0.42, 0.51, f) * (1 - land);
+  const elev = snoise3(n[0], n[1], n[2], 6.5, 9, 3, 0);
+  const lat = Math.abs(n[1]);
+  const desert = ss(0.16, 0.32, lat) * (1 - ss(0.44, 0.60, lat)) * ss(0.45, 0.60, snoise3(n[0], n[1], n[2], 3.2, 17, 2, 0));
+  const ice = clamp(ss(0.80, 0.90, lat) + 0.7 * ss(0.68, 0.80, elev) * land * ss(0.60, 0.78, lat), 0, 1);
+  let or_ = 16 + (46 - 16) * shallow, og = 78 + (178 - 78) * shallow, ob = 205 + (214 - 205) * shallow;
+  const e2 = clamp((elev - 0.42) * 2.6, 0, 1);
+  let lr = 62 + (176 - 62) * e2, lg = 170 + (138 - 170) * e2, lb = 74 + (80 - 74) * e2;
+  lr = lr * (1 - desert) + 210 * desert; lg = lg * (1 - desert) + 178 * desert; lb = lb * (1 - desert) + 108 * desert;
+  let r = or_ * (1 - land) + lr * land, g = og * (1 - land) + lg * land, b = ob * (1 - land) + lb * land;
+  r = r * (1 - ice) + 240 * ice; g = g * (1 - ice) + 240 * ice; b = b * (1 - ice) + 240 * ice;
+  const nc = spin(dx, dy, dz, t * 0.17);
+  const cloud = ss(0.56, 0.74, snoise3(nc[0], nc[1], nc[2], 3.6, 14, 4, t * 0.02)) * 0.90;
+  r = r * (1 - cloud) + 244 * cloud; g = g * (1 - cloud) + 247 * cloud; b = b * (1 - cloud) + 255 * cloud;
+  const lam = clamp(0.58 + 0.42 * (dx * EL[0] + dy * EL[1] + dz * EL[2]), 0, 1);
+  const atm = Math.pow(1 - dz, 2.5);
+  r = (r * lam + atm * 110 * 0.8) * 1.12; g = (g * lam + atm * 175 * 0.8) * 1.12; b = (b * lam + atm * 255 * 0.8) * 1.12;
+  const night = 1 - ss(0.28, 0.50, lam);
+  const cities = night * land * ss(0.68, 0.80, snoise3(n[0], n[1], n[2], 28.0, 20, 1, 0)) * (1 - cloud);
+  r += cities * 255 * 0.9; g += cities * 190 * 0.9; b += cities * 90 * 0.9;
+  oD = clamp((0.44 + 0.16 * land + 0.34 * cloud + 0.26 * ice + 0.12 * (lam - 0.5) + 0.20 * cities) * (0.82 + 0.18 * Math.sqrt(dz)), 0, 1);
+  oR = clamp(r, 0, 255); oG = clamp(g, 0, 255); oB = clamp(b, 0, 255);
+}
+
+const PR = (function () {
+  const r = mulberry(8), o = { A: [], H: [], W: [], PH: [], DR: [] };
+  for (let i = 0; i < 6; i++) o.A.push(uni(r, 0, 2 * Math.PI));
+  for (let i = 0; i < 6; i++) o.H.push(uni(r, 0.04, 0.10));
+  for (let i = 0; i < 6; i++) o.W.push(uni(r, 0.10, 0.22));
+  for (let i = 0; i < 6; i++) o.PH.push(uni(r, 0, 6.28));
+  for (let i = 0; i < 6; i++) o.DR.push(uni(r, -0.03, 0.03));
+  return o;
+})();
+
+function closeness(t) {
+  const u = (((t % CYCLE) + CYCLE) % CYCLE) / CYCLE;
+  if (u < 0.08) return 0;
+  if (u < 0.54) return (u - 0.08) / 0.46;
+  if (u < 0.76) return 1;
+  if (u < 0.94) return 1 - (u - 0.76) / 0.18;
+  return 0;
+}
+function phaseName(t) {
+  const u = (((t % CYCLE) + CYCLE) % CYCLE) / CYCLE;
+  if (u < 0.08) return "Apart";
+  if (u < 0.54) return "Merging";
+  if (u < 0.76) return "Earth";
+  if (u < 0.94) return "Parting";
+  return "Apart";
+}
+function smin(a, b, k) {
+  if (k <= 1e-6) return Math.min(a, b);
+  const h = Math.max(k - Math.abs(a - b), 0) / k;
+  return Math.min(a, b) - h * h * k * 0.25;
+}
+
+const X = new Float32Array(N), Y = new Float32Array(N);
+const revS = new Float32Array(N), revM = new Float32Array(N), revE = new Float32Array(N), reveal = new Float32Array(N);
+const cx = COLS / 2, cy = ROWS * ASPECT / 2, unitH = ROWS * ASPECT;
+(function () {
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) { X[r * COLS + c] = c + 0.5; Y[r * COLS + c] = (r + 0.5) * ASPECT; }
+  const g = mulberry(9);
+  const r1 = new Float32Array(N), r2 = new Float32Array(N), r3 = new Float32Array(N);
+  for (let i = 0; i < N; i++) r1[i] = g();
+  for (let i = 0; i < N; i++) r2[i] = g();
+  for (let i = 0; i < N; i++) r3[i] = g();
+  const denom = 0.55 * 2 * ORBIT_R * COLS + SUN_RAD * unitH;
+  for (let i = 0; i < N; i++) {
+    const far = clamp(Math.hypot(X[i] - cx, Y[i] - cy) / denom, 0, 1);
+    reveal[i] = r1[i];
+    revS[i] = 0.65 * r1[i] + 0.35 * (1 - far);
+    revM[i] = 0.65 * r2[i] + 0.35 * (1 - far);
+    revE[i] = 0.60 * r3[i] + 0.40 * far;
+  }
+})();
+
+const L = new Float32Array(N), FR = new Float32Array(N), FG = new Float32Array(N), FB = new Float32Array(N);
+const CH = new Array(N).fill(" ");
+const PMC = new Uint8Array(N);
+const inside = new Uint8Array(N);
+
+const mrng = mulberry(5);
+const meteors = [];
+function respawn(m, initial) {
+  m.dir = mrng() < 0.5 ? -1 : 1;
+  m.x = uni(mrng, 0.05, 0.95) * COLS; m.y = uni(mrng, 0.05, 0.55) * ROWS;
+  m.vx = m.dir * uni(mrng, 26, 40); m.vy = uni(mrng, 11, 17);
+  m.life = uni(mrng, 0.35, 0.7); m.age = 0;
+  m.wait = initial ? uni(mrng, 2.0, 6.0) : uni(mrng, 0.5, 5.0);
+}
+for (let i = 0; i < N_METEORS; i++) { const m = {}; respawn(m, true); meteors.push(m); }
+
+function stampStars(t, amt) {
+  const W = COLS * CWv, H = ROWS * CHv;
+  const kc = [], kr = [], kb = [], ks = [];
+  for (let s = 0; s < N_STARS; s++) {
+    const d = st.SD[s];
+    const c = Math.trunc((W * 0.5 + (st.SX[s] / d) * H) / CWv);
+    const r = Math.trunc((H * 0.5 + (st.SY[s] / d) * H) / CHv);
+    const alpha = ss(1.0, 0.82, d) * (0.80 + 0.20 * Math.sin(t * st.SF[s] + st.SPH[s])) * amt;
+    if (!(c >= 0 && c < COLS && r >= 0 && r < ROWS && alpha > 0.04)) continue;
+    const b = st.sb[s] * alpha * (1 + 0.05 / d);
+    const i = r * COLS + c;
+    if (!PMC[i]) continue;
+    if (!(b > L[i] * 0.7)) continue;
+    kc.push(c); kr.push(r); kb.push(b); ks.push(s);
+  }
+  for (let j = 0; j < kc.length; j++) {
+    const i = kr[j] * COLS + kc[j], b = kb[j], col = st.scol[ks[j]], k = clamp(0.35 + 0.9 * b, 0, 1);
+    CH[i] = b < 0.20 ? "." : (b < 0.42 ? "+" : "*");
+    FR[i] = col[0] * k; FG[i] = col[1] * k; FB[i] = col[2] * k;
+  }
+  let used = 0;
+  for (let j = 0; j < kc.length && used < 40; j++) {
+    const bb = kb[j];
+    if (!(bb > 0.55)) continue;
+    used++;
+    const cc = kc[j], rr = kr[j], col = st.scol[ks[j]];
+    CH[rr * COLS + cc] = bb > 0.85 ? "@" : "*";
+    const ln = Math.trunc(2 + 6 * (bb - 0.5));
+    for (let k = 1; k <= ln; k++) {
+      const a = (1 - k / (ln + 1)) * bb;
+      const v = Math.floor(k / 2) + (k > 2 ? 1 : 0);
+      const arms = [[0, k, "-"], [0, -k, "-"], [v, 0, "|"], [-v, 0, "|"]];
+      for (let q = 0; q < 4; q++) {
+        const r2 = rr + arms[q][0], c2 = cc + arms[q][1];
+        if (r2 >= 0 && r2 < ROWS && c2 >= 0 && c2 < COLS) {
+          const i2 = r2 * COLS + c2;
+          if (PMC[i2] && L[i2] < a * 0.8) {
+            CH[i2] = a > 0.18 ? arms[q][2] : ".";
+            const kk = Math.min(1.0, 0.25 + a);
+            FR[i2] = col[0] * kk; FG[i2] = col[1] * kk; FB[i2] = col[2] * kk;
+          }
+        }
+      }
+    }
+  }
+}
+
+let tPrev = 0;
+function frame(t) {
+  const dt = Math.max(0, Math.min(0.1, t - tPrev)); tPrev = t;
+
+  const c = closeness(t);
+  const rs0 = SUN_RAD * unitH, rm0 = MOON_RAD * unitH, rc = EARTH_RAD * unitH;
+  const D0 = 2 * ORBIT_R * COLS;
+  let p = Math.min(1, c / 0.85);
+  p = 0.65 * Math.pow(p, 1.6) + 0.35 * sstep(p);
+  const D = D0 * (1 - p);
+  const mm_ = sstep((c - 0.10) / 0.75);
+  const rs = rs0 + (rc - rs0) * mm_, rm = rm0 + (rc - rm0) * mm_;
+  const phi = 0.20 * Math.sin(t * 2 * Math.PI / 31.0) + 0.07 * Math.sin(t * 2 * Math.PI / 13.0 + 1.0) + 2.3 * Math.PI * Math.pow(p, 1.15);
+  const gx = Math.cos(phi), gy = Math.sin(phi);
+  const sx = cx - 0.45 * D * gx, sy = cy - 0.45 * D * gy;
+  const mx = cx + 0.55 * D * gx, my = cy + 0.55 * D * gy;
+  const k = 9.0 * ss(0.30, 0.55, c) * (1 - sstep((c - 0.62) / 0.20));
+  const swirl = 3.4 * ss(0.22, 0.52, c) * (1 - ss(0.66, 0.96, c));
+
+  const rE = 0.5 * (rs + rm) * (0.55 + 0.45 * sstep((c - 0.28) / 0.60));
+  const e = ss(0.30, 0.82, c);
+  const presS = 1 - ss(0.34, 0.86, c), presM = 1 - ss(0.38, 0.88, c);
+
+  const vx = sx - mx, vy = sy - my, vn = Math.hypot(vx, vy);
+  const lux = vn > 1e-3 ? vx / vn : -1, luy = vn > 1e-3 ? vy / vn : 0;
+  const wf = ss(0.25, 0.70, c);
+  const lv = norm([(1 - wf) * 0.85 * lux + wf * -0.5, (1 - wf) * 0.85 * luy + wf * -0.32, 0.5 * (1 - wf) + 0.8 * wf]);
+
+  const R0 = 0.27 * unitH;
+  const progS = ss(0.0, 1.0, t / PLANET_FADE_IN), progM = ss(0.0, 1.0, (t - 0.8) / PLANET_FADE_IN);
+  const sunAlive = presS;
+
+  for (let i = 0; i < N; i++) {
+    const ddx = X[i] - cx, ddy = Y[i] - cy;
+    const a_ = swirl * Math.exp(-Math.pow(Math.hypot(ddx, ddy) / R0, 2));
+    const ca = Math.cos(a_), sa = Math.sin(a_);
+    const Xw = cx + ddx * ca - ddy * sa, Yw = cy + ddx * sa + ddy * ca;
+
+    const dxs = (Xw - sx) / rs, dys = (Yw - sy) / rs, dxm = (Xw - mx) / rm, dym = (Yw - my) / rm;
+    const r2s = dxs * dxs + dys * dys + 1e-9, r2m = dxm * dxm + dym * dym + 1e-9;
+    const dS = (Math.sqrt(r2s) - 1.0) * rs, dM = (Math.sqrt(r2m) - 1.0) * rm;
+    const ins = smin(dS, dM, k) <= 0;
+    inside[i] = ins ? 1 : 0;
+    const wsp = 1 / (1 + Math.exp(clamp((dS - dM) / 6.0, -30, 30))), wmp = 1 - wsp;
+    const shS = revS[i] <= presS * 1.0001 + 1e-6, shM = revM[i] <= presM * 1.0001 + 1e-6;
+
+    let l = 0, fr = 0, fg = 0, fb = 0;
+    if (ins) {
+      let Ds = 0, Dm = 0, sr = 0, sg = 0, sb = 0, mr = 0, mg = 0, mb = 0;
+      if (shS) {
+        const sc = Math.max(1, Math.sqrt(r2s)), nx = dxs / sc, ny = dys / sc, nz = Math.sqrt(clamp(1 - nx * nx - ny * ny, 0.03, 1));
+        shadeSun(nx, ny, nz, t); Ds = oD; sr = oR; sg = oG; sb = oB;
+      }
+      if (shM) {
+        const sc = Math.max(1, Math.sqrt(r2m)), nx = dxm / sc, ny = dym / sc, nz = Math.sqrt(clamp(1 - nx * nx - ny * ny, 0.03, 1));
+        shadeMoon(nx, ny, nz, t, lv); Dm = oD; mr = oR; mg = oG; mb = oB;
+      }
+      const both = shS && shM;
+      const w1 = both ? wsp : (shS ? 1 : 0), w2 = both ? wmp : (shM ? 1 : 0);
+      l = Ds * w1 + Dm * w2; fr = sr * w1 + mr * w2; fg = sg * w1 + mg * w2; fb = sb * w1 + mb * w2;
+    }
+
+    const dxe = (Xw - cx) / rE, dye = (Yw - cy) / rE, r2e = dxe * dxe + dye * dye + 1e-9;
+    if (e > 0.01 && ins && revE[i] <= e * 1.0001 + 1e-6 && r2e <= 1.5) {
+      const sc = Math.max(1, Math.sqrt(r2e)), nx = dxe / sc, ny = dye / sc, nz = Math.sqrt(clamp(1 - nx * nx - ny * ny, 0.03, 1));
+      shadeEarth(nx, ny, nz, t);
+      const wE = 1 - ss(1.00, 1.10, Math.sqrt(r2e));
+      l = l * (1 - wE) + oD * wE; fr = fr * (1 - wE) + oR * wE; fg = fg * (1 - wE) + oG * wE; fb = fb * (1 - wE) + oB * wE;
+    }
+
+    if (sunAlive > 0.01 && !ins) {
+      const rr = Math.sqrt(r2s);
+      if (rr < 1.24 && wsp > 0.5) {
+        const ang = Math.atan2(Yw - sy, Xw - sx);
+        const rays = 0.55 + 0.45 * Math.sin(ang * 7 + t * 0.3) * Math.sin(ang * 3 - t * 0.2);
+        const fall = Math.pow(clamp(1 - (rr - 1.0) / 0.22, 0, 1), 1.9);
+        const Lc = 0.11 * fall * rays;
+        let Lp = 0;
+        for (let q = 0; q < 6; q++) {
+          const a0 = PR.A[q] + PR.DR[q] * t;
+          const da = ((ang - a0 + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+          const h = PR.H[q] * (0.65 + 0.35 * Math.sin(t * 0.4 + PR.PH[q])) * Math.exp(-Math.pow(da / PR.W[q], 2));
+          if (rr > 1.0 && (rr - 1.0) < h) Lp = Math.max(Lp, 0.28 + 0.32 * (1 - (rr - 1.0) / (h + 1e-6)));
+        }
+        const useP = Lp > Lc, Lr = Math.max(Lc, Lp) * sunAlive;
+        const km = 0.35 + 0.65 * clamp(Lr / 0.4, 0, 1);
+        l = Math.max(l, Lr);
+        if (Lr > 0.02) { fr = (useP ? 255 : 232) * km; fg = (useP ? 96 : 122) * km; fb = (useP ? 36 : 42) * km; }
+      }
+    }
+
+    if (e > 0.3 && !ins && r2e > 1.0 && r2e < 1.26) {
+      const fall2 = Math.pow(clamp(1 - (Math.sqrt(r2e) - 1.0) / 0.12, 0, 1), 1.5);
+      l = Math.max(l, 0.10 * fall2 * e);
+      const km = 0.4 + 0.6 * fall2; fr = 100 * km; fg = 170 * km; fb = 255 * km;
+    }
+
+    const gray = (fr + fg + fb) / 3;
+    fr = clamp((gray + (fr - gray) * VIBRANCE) * 1.04, 0, 255);
+    fg = clamp((gray + (fg - gray) * VIBRANCE) * 1.04, 0, 255);
+    fb = clamp((gray + (fb - gray) * VIBRANCE) * 1.04, 0, 255);
+
+    const prog = wsp > 0.5 ? progS : progM;
+    if (reveal[i] < prog * 1.05) { const f = 0.2 + 0.8 * prog; fr *= f; fg *= f; fb *= f; }
+    else { l = 0; fr = 0; fg = 0; fb = 0; }
+
+    L[i] = l; FR[i] = fr; FG[i] = fg; FB[i] = fb;
+    const ix = Math.trunc(clamp(l, 0, 1) * (RAMP.length - 1));
+    CH[i] = l < 0.03 ? " " : RAMP[ix];
+    PMC[i] = l < 0.06 ? 1 : 0;
+  }
+
+  let amt = ss(0.0, 1.0, t / STAR_FADE_IN);
+  amt *= 0.85 + 0.15 * Math.sin(t * 0.35);
+  stampStars(t, amt);
+
+  for (let q = 0; q < meteors.length; q++) {
+    const m = meteors[q];
+    if (m.wait > 0) { m.wait -= dt; continue; }
+    m.age += dt; m.x += m.vx * dt; m.y += m.vy * dt;
+    if (m.age > m.life) { respawn(m, false); continue; }
+    const chr = m.dir > 0 ? "\\" : "/", fade = 1 - m.age / m.life, n = 9;
+    for (let j = 0; j < n; j++) {
+      const c2 = Math.round(m.x - m.vx * 0.026 * j), r2 = Math.round(m.y - m.vy * 0.026 * j);
+      if (r2 >= 0 && r2 < ROWS && c2 >= 0 && c2 < COLS && PMC[r2 * COLS + c2]) {
+        const i2 = r2 * COLS + c2, a = (1 - j / n) * fade;
+        if (j === 0) { CH[i2] = "@"; FR[i2] = 200; FG[i2] = 225; FB[i2] = 255; }
+        else { CH[i2] = chr; const kk = 0.25 + 0.75 * a; FR[i2] = 150 * kk; FG[i2] = 190 * kk; FB[i2] = 255 * kk; }
+      }
+    }
+  }
+}
+
+const stage = document.getElementById("stage");
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const glowCv = document.createElement("canvas"); glowCv.width = COLS; glowCv.height = ROWS;
+const gctx = glowCv.getContext("2d");
+const glowImg = gctx.createImageData(COLS, ROWS);
+const cover = {};
+let cssW = 0, cssH = 0, cellW = 0, cellH = 0, dpr = 1;
+
+function measureCover() {
+  const w = 16, h = 34, tc = document.createElement("canvas"); tc.width = w; tc.height = h;
+  const tx = tc.getContext("2d");
+  for (let i = 0; i < RAMP.length; i++) {
+    const ch = RAMP[i];
+    tx.clearRect(0, 0, w, h);
+    tx.fillStyle = "#fff"; tx.font = "bold " + (h * 0.82) + "px " + FONT; tx.textAlign = "center"; tx.textBaseline = "middle";
+    tx.fillText(ch, w / 2, h / 2);
+    const d = tx.getImageData(0, 0, w, h).data; let s = 0;
+    for (let q = 3; q < d.length; q += 4) s += d[q];
+    cover[ch] = s / (255 * w * h);
+  }
+  cover[" "] = 0;
+}
+
+function resize() {
+  cssW = stage.clientWidth; cellW = cssW / COLS; cellH = cellW * ASPECT; cssH = cellH * ROWS;
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = Math.round(cssW * dpr); cv.height = Math.round(cssH * dpr);
+  cv.style.height = cssH + "px";
+}
+
+const gA = new Float32Array(N * 3), gB = new Float32Array(N * 3);
+function blurPass(src, dst) {
+  for (let r = 0; r < ROWS; r++) {
+    const ru = ((r + ROWS - 1) % ROWS) * COLS, rd = ((r + 1) % ROWS) * COLS, rc = r * COLS;
+    for (let c = 0; c < COLS; c++) {
+      const cl = (c + COLS - 1) % COLS, cr = (c + 1) % COLS;
+      for (let k = 0; k < 3; k++) {
+        dst[(rc + c) * 3 + k] = (src[(rc + c) * 3 + k] * 2 + src[(ru + c) * 3 + k] + src[(rd + c) * 3 + k] + src[(rc + cl) * 3 + k] + src[(rc + cr) * 3 + k]) / 6;
+      }
+    }
+  }
+}
+
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.globalCompositeOperation = "source-over";
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cssW, cssH);
+  ctx.font = "bold " + (cellH * 0.82) + "px " + FONT;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const i = r * COLS + c, ch = CH[i];
+      if (ch === " ") continue;
+      ctx.fillStyle = "rgb(" + (FR[i] | 0) + "," + (FG[i] | 0) + "," + (FB[i] | 0) + ")";
+      ctx.fillText(ch, c * cellW + cellW / 2, r * cellH + cellH / 2);
+    }
+  }
+
+  for (let i = 0; i < N; i++) {
+    const cv_ = cover[CH[i]] || 0;
+    gA[i * 3] = FR[i] * cv_; gA[i * 3 + 1] = FG[i] * cv_; gA[i * 3 + 2] = FB[i] * cv_;
+  }
+  blurPass(gA, gB); blurPass(gB, gA);
+  const d = glowImg.data;
+  for (let i = 0; i < N; i++) {
+    d[i * 4] = clamp(gA[i * 3] * GLOW_GAIN, 0, 255); d[i * 4 + 1] = clamp(gA[i * 3 + 1] * GLOW_GAIN, 0, 255);
+    d[i * 4 + 2] = clamp(gA[i * 3 + 2] * GLOW_GAIN, 0, 255); d[i * 4 + 3] = 255;
+  }
+  gctx.putImageData(glowImg, 0, 0);
+  ctx.globalCompositeOperation = "lighter";
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(glowCv, 0, 0, cssW, cssH);
+  ctx.globalCompositeOperation = "source-over";
+}
+
+const playBtn = document.getElementById("playBtn"), restartBtn = document.getElementById("restartBtn");
+const phaseEl = document.getElementById("phase"), timeEl = document.getElementById("time");
+
+let T = 0, paused = true, last = performance.now(), acc = 0;
+
+function pad(n) { return (n < 10 ? "0" : "") + n; }
+function render() {
+  frame(T); draw();
+  const s = Math.floor(((T % CYCLE) + CYCLE) % CYCLE);
+  phaseEl.textContent = phaseName(T);
+  timeEl.textContent = "00:" + pad(s) + " / 00:" + pad(CYCLE);
+}
+function setPaused(v) { paused = v; playBtn.textContent = paused ? "Play" : "Pause"; last = performance.now(); }
+
+function tick(now) {
+  requestAnimationFrame(tick);
+  const dt = (now - last) / 1000; last = now;
+  if (paused) return;
+  acc += dt;
+  if (acc < 1 / FPS - 0.002) return;
+  T += Math.min(acc, 0.1); acc = 0;
+  
+  if (window.__onAnimTick) {
+    window.__onAnimTick(T, CYCLE);
+  }
+
+  render();
+}
+
+playBtn.addEventListener("click", function () { setPaused(!paused); });
+restartBtn.addEventListener("click", function () { 
+  T = 0; tPrev = 0; render(); 
+  if (window.__onAnimRestart) window.__onAnimRestart();
+  if (paused) setPaused(false); 
+});
+
+document.addEventListener("keydown", function (ev) {
+  if (ev.code === "Space" && ev.target === document.body) { ev.preventDefault(); setPaused(!paused); }
+});
+stage.addEventListener("keydown", function (ev) { if (ev.code === "Space" || ev.code === "Enter") { ev.preventDefault(); setPaused(!paused); } });
+window.addEventListener("resize", function () { resize(); render(); });
+
+measureCover(); resize(); setPaused(true); render();
+requestAnimationFrame(tick);
+
+window.__startExperience = function() {
+  T = 0;
+  tPrev = performance.now();
+  setPaused(false);
+  render();
+};
+})();
+</script>
+<script src="audio.js"></script>
+</body>
+</html>
